@@ -97,6 +97,10 @@ class FileManager:
         self.tree.heading("size", text="Size")
         self.tree.column("size", width=100)
         
+        # Configure tags for folders and files
+        self.tree.tag_configure('folder', foreground='#87CEEB')  # Light blue for folders
+        self.tree.tag_configure('file', foreground='white')      # White for files
+        
         self.tree.pack(fill="both", expand=True, padx=10, pady=5)
         
         # Bind double-click event
@@ -165,7 +169,8 @@ class FileManager:
                 try:
                     # Insert directory with temporary size
                     item_id = self.tree.insert("", "end", text=item,
-                                             values=("Calculating...",))
+                                             values=("Calculating...",),
+                                             tags=('folder',))  # Add folder tag
                     # Start size calculation in background
                     thread = threading.Thread(
                         target=self.calculate_folder_size_async,
@@ -182,7 +187,8 @@ class FileManager:
                 try:
                     size = os.path.getsize(full_path)
                     self.tree.insert("", "end", text=item,
-                                   values=(self.format_size(size),))
+                                   values=(self.format_size(size),),
+                                   tags=('file',))  # Add file tag
                 except (PermissionError, OSError):
                     continue
                     
