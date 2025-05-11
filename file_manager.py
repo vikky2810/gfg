@@ -7,13 +7,17 @@ from queue import Queue
 import time
 import string
 from ctypes import windll
+import ctypes
 import shutil
+from datetime import datetime
+import mimetypes
+from tkinter import filedialog
 
 class FileManager:
     def __init__(self, root):
         self.root = root
         self.root.title("File Manager")
-        self.root.geometry("800x600")
+        self.root.geometry("1000x700")
         self.root.configure(bg="#2b2b2b")
         
         # Remove default title bar
@@ -22,12 +26,35 @@ class FileManager:
         # Queue for communication between threads
         self.size_queue = Queue()
         
+        # Sorting variables
+        self.sort_by = "name"
+        self.sort_reverse = False
+        
+        # Filter variables
+        self.file_type_filter = "All"
+        self.size_min = 0
+        self.size_max = float('inf')
+        self.date_min = None
+        self.date_max = None
+        self.date_range = None  # Initialize date_range
+        
         # Custom title bar
         self.create_title_bar()
         
         # Path display
         self.path_var = tk.StringVar()
         self.create_path_display()
+        
+        # Create main content frame
+        self.content_frame = tk.Frame(self.root, bg="#2b2b2b")
+        self.content_frame.pack(fill="both", expand=True)
+        
+        # Create filter panel
+        self.create_filter_panel()
+        
+        # Create file view frame
+        self.file_view_frame = tk.Frame(self.content_frame, bg="#2b2b2b")
+        self.file_view_frame.pack(side="right", fill="both", expand=True)
         
         # Navigation buttons
         self.create_navigation_buttons()
@@ -77,6 +104,141 @@ class FileManager:
                             bg="#3c3f41", fg="white", bd=0)
         up_button.pack(side="left")
 
+    def create_filter_panel(self):
+        filter_frame = tk.Frame(self.content_frame, bg="#1f1f1f", width=200)
+        filter_frame.pack(side="left", fill="y", padx=5, pady=5)
+        filter_frame.pack_propagate(False)  # Prevent frame from shrinking
+        
+        # Title
+        title = tk.Label(filter_frame, text="Filters", bg="#1f1f1f", fg="white", font=("Arial", 12, "bold"))
+        title.pack(pady=10)
+        
+        # File Type Filter
+        type_frame = tk.LabelFrame(filter_frame, text="File Type", bg="#1f1f1f", fg="white")
+        type_frame.pack(fill="x", padx=5, pady=5)
+        
+        self.type_var = tk.StringVar(value="All")
+        types = ["All", "Documents", "Images", "Audio", "Video", "Archives", "Others"]
+        for t in types:
+            tk.Radiobutton(type_frame, text=t, value=t, variable=self.type_var,
+                          bg="#1f1f1f", fg="white", selectcolor="#3c3f41",
+                          command=self.apply_filters).pack(anchor="w")
+        
+        # Size Filter
+        size_frame = tk.LabelFrame(filter_frame, text="Size Range", bg="#1f1f1f", fg="white")
+        size_frame.pack(fill="x", padx=5, pady=5)
+        
+        sizes = ["Any", "<10MB", "10MB-100MB", "100MB-1GB", ">1GB"]
+        self.size_var = tk.StringVar(value="Any")
+        for s in sizes:
+            tk.Radiobutton(size_frame, text=s, value=s, variable=self.size_var,
+                          bg="#1f1f1f", fg="white", selectcolor="#3c3f41",
+                          command=self.apply_filters).pack(anchor="w")
+        
+        # Date Filter
+        date_frame = tk.LabelFrame(filter_frame, text="Date Modified", bg="#1f1f1f", fg="white")
+        date_frame.pack(fill="x", padx=5, pady=5)
+        
+        dates = ["Any time", "Today", "This week", "This month", "This year"]
+        self.date_var = tk.StringVar(value="Any time")
+        for d in dates:
+            tk.Radiobutton(date_frame, text=d, value=d, variable=self.date_var,
+                          bg="#1f1f1f", fg="white", selectcolor="#3c3f41",
+                          command=self.apply_filters).pack(anchor="w")
+        
+        # Reset Filters Button
+        reset_btn = tk.Button(filter_frame, text="Reset Filters", command=self.reset_filters,
+                            bg="#3c3f41", fg="white", bd=0)
+        reset_btn.pack(pady=10)
+
+    def apply_filters(self):
+        if self.current_path is None:
+            return
+            
+        # Get filter values
+        type_filter = self.type_var.get()
+        size_filter = self.size_var.get()
+        date_filter = self.date_var.get()
+        
+        # Process size filter
+        size_ranges = {
+            "Any": (0, float('inf')),
+            "<10MB": (0, 10 * 1024 * 1024),
+            "10MB-100MB": (10 * 1024 * 1024, 100 * 1024 * 1024),
+            "100MB-1GB": (100 * 1024 * 1024, 1024 * 1024 * 1024),
+            ">1GB": (1024 * 1024 * 1024, float('inf'))
+        }
+        self.size_min, self.size_max = size_ranges[size_filter]
+        
+        # Process date filter
+        now = datetime.now()
+        date_ranges = {
+            "Any time": None,
+            "Today": (now.replace(hour=0, minute=0, second=0), now),
+            "This week": (now.replace(day=now.day-now.weekday(), hour=0, minute=0, second=0), now),
+            "This month": (now.replace(day=1, hour=0, minute=0, second=0), now),
+            "This year": (now.replace(month=1, day=1, hour=0, minute=0, second=0), now)
+        }
+        self.date_range = date_ranges[date_filter]
+        
+        # Update display
+        self.display_files(self.current_path)
+
+    def reset_filters(self):
+        self.type_var.set("All")
+        self.size_var.set("Any")
+        self.date_var.set("Any time")
+        self.apply_filters()
+
+    def get_file_type_category(self, file_path):
+        if os.path.isdir(file_path):
+            return "Folder"
+            
+        mime_type, _ = mimetypes.guess_type(file_path)
+        if not mime_type:
+            return "Others"
+            
+        if mime_type.startswith('text/') or mime_type in ['application/pdf', 'application/msword']:
+            return "Documents"
+        elif mime_type.startswith('image/'):
+            return "Images"
+        elif mime_type.startswith('audio/'):
+            return "Audio"
+        elif mime_type.startswith('video/'):
+            return "Video"
+        elif mime_type in ['application/zip', 'application/x-rar-compressed']:
+            return "Archives"
+        else:
+            return "Others"
+
+    def should_show_item(self, full_path, file_type, size, mtime):
+        try:
+            # Always show folders
+            if os.path.isdir(full_path):
+                return True
+                
+            # Check file type filter
+            if self.type_var.get() != "All":
+                if self.get_file_type_category(full_path) != self.type_var.get():
+                    return False
+            
+            # Check size filter (only for files)
+            if not os.path.isdir(full_path):  # Only apply size filter to files
+                if not (self.size_min <= size <= self.size_max):
+                    return False
+            
+            # Check date filter
+            if hasattr(self, 'date_range') and self.date_range:
+                start_date, end_date = self.date_range
+                mtime_dt = datetime.fromtimestamp(mtime)
+                if not (start_date <= mtime_dt <= end_date):
+                    return False
+            
+            return True
+        except Exception as e:
+            print(f"Error in should_show_item: {str(e)}")
+            return True  # Show item by default if there's an error
+
     def create_treeview(self):
         # Create Treeview with custom style
         style = ttk.Style()
@@ -90,29 +252,50 @@ class FileManager:
                        foreground="white")
         
         # Create scrollbar
-        scrollbar = ttk.Scrollbar(self.root)
+        scrollbar = ttk.Scrollbar(self.file_view_frame)
         scrollbar.pack(side="right", fill="y")
         
-        # Create Treeview
-        self.tree = ttk.Treeview(self.root, columns=("size",),
-                                show="tree headings",
+        # Create Treeview with multiple columns
+        self.tree = ttk.Treeview(self.file_view_frame,
+                                columns=("name", "size", "type", "modified"),
+                                show="headings",
                                 yscrollcommand=scrollbar.set)
         
         # Configure scrollbar
         scrollbar.config(command=self.tree.yview)
         
         # Configure columns
-        self.tree.heading("size", text="Size")
+        self.tree.heading("name", text="Name", command=lambda: self.sort_items("name"))
+        self.tree.heading("size", text="Size", command=lambda: self.sort_items("size"))
+        self.tree.heading("type", text="Type", command=lambda: self.sort_items("type"))
+        self.tree.heading("modified", text="Modified", command=lambda: self.sort_items("modified"))
+        
+        # Set column widths
+        self.tree.column("name", width=300)
         self.tree.column("size", width=100)
+        self.tree.column("type", width=100)
+        self.tree.column("modified", width=150)
         
         # Configure tags for folders and files
-        self.tree.tag_configure('folder', foreground='#87CEEB')  # Light blue for folders
-        self.tree.tag_configure('file', foreground='white')      # White for files
+        self.tree.tag_configure('folder', foreground='#87CEEB')
+        self.tree.tag_configure('file', foreground='white')
         
         self.tree.pack(fill="both", expand=True, padx=10, pady=5)
         
-        # Bind double-click event
+        # Bind events
         self.tree.bind("<Double-1>", self.on_item_double_click)
+
+    def sort_items(self, column):
+        if self.current_path is None:
+            return
+            
+        if self.sort_by == column:
+            self.sort_reverse = not self.sort_reverse
+        else:
+            self.sort_by = column
+            self.sort_reverse = False
+            
+        self.display_files(self.current_path)
 
     def format_size(self, size):
         if size is None:
@@ -124,16 +307,21 @@ class FileManager:
         return f"{size:.1f} PB"
 
     def get_folder_size(self, folder):
+        """Calculate the total size of a folder"""
+        if not os.path.exists(folder):
+            return 0
+            
         total_size = 0
         try:
-            for dirpath, dirnames, filenames in os.walk(folder):
-                for filename in filenames:
-                    file_path = os.path.join(dirpath, filename)
+            for dirpath, dirnames, filenames in os.walk(folder, onerror=None):
+                for f in filenames:
                     try:
-                        total_size += os.path.getsize(file_path)
-                    except (OSError, FileNotFoundError):
+                        fp = os.path.join(dirpath, f)
+                        if not os.path.islink(fp):  # Skip symbolic links
+                            total_size += os.path.getsize(fp)
+                    except (OSError, FileNotFoundError, PermissionError):
                         continue
-        except (PermissionError, OSError):
+        except (OSError, PermissionError):
             return 0
         return total_size
 
@@ -158,51 +346,87 @@ class FileManager:
             self.tree.delete(item)
         
         try:
-            # List all items first
-            items = os.listdir(path)
-            
-            # Separate directories and files
-            dirs = []
-            files = []
-            for item in items:
-                full_path = os.path.join(path, item)
-                if os.path.isdir(full_path):
-                    dirs.append(item)
-                else:
-                    files.append(item)
-            
-            # Display directories first
-            for item in sorted(dirs):
-                full_path = os.path.join(path, item)
+            # Get all items with their information
+            items = []
+            for item in os.listdir(path):
                 try:
-                    # Insert directory with temporary size
-                    item_id = self.tree.insert("", "end", text=item,
-                                             values=("Calculating...",),
-                                             tags=('folder',))  # Add folder tag
-                    # Start size calculation in background
-                    thread = threading.Thread(
-                        target=self.calculate_folder_size_async,
-                        args=(full_path, item_id)
-                    )
-                    thread.daemon = True
-                    thread.start()
-                except (PermissionError, OSError):
+                    full_path = os.path.join(path, item)
+                    stats = os.stat(full_path)
+                    
+                    # Get size based on whether it's a file or directory
+                    try:
+                        if os.path.isfile(full_path):
+                            size = stats.st_size
+                        else:
+                            # For directories, show "Folder" instead of size initially
+                            size = 0
+                    except:
+                        size = 0
+                    
+                    mtime = stats.st_mtime
+                    
+                    if self.should_show_item(full_path, self.get_file_type_category(full_path), size, mtime):
+                        items.append({
+                            'name': item,
+                            'path': full_path,
+                            'size': size,
+                            'type': self.get_file_type_category(full_path),
+                            'modified': mtime,
+                            'is_dir': os.path.isdir(full_path)
+                        })
+                except (PermissionError, OSError) as e:
+                    print(f"Error accessing {item}: {str(e)}")
                     continue
             
-            # Then display files
-            for item in sorted(files):
-                full_path = os.path.join(path, item)
+            # Sort items
+            items.sort(key=lambda x: (
+                not x['is_dir'],  # Directories first
+                {
+                    'name': x['name'].lower(),
+                    'size': x['size'],
+                    'type': x['type'],
+                    'modified': x['modified']
+                }[self.sort_by]
+            ), reverse=self.sort_reverse)
+            
+            # Display items
+            for item in items:
                 try:
-                    size = os.path.getsize(full_path)
-                    self.tree.insert("", "end", text=item,
-                                   values=(self.format_size(size),),
-                                   tags=('file',))  # Add file tag
-                except (PermissionError, OSError):
+                    if item['is_dir']:
+                        # For directories, start a thread to calculate size
+                        item_id = self.tree.insert("", "end",
+                                                 values=(
+                                                     item['name'],
+                                                     "Calculating...",
+                                                     item['type'],
+                                                     datetime.fromtimestamp(item['modified']).strftime('%Y-%m-%d %H:%M')
+                                                 ),
+                                                 tags=('folder',))
+                        # Start size calculation in background
+                        thread = threading.Thread(
+                            target=self.calculate_folder_size_async,
+                            args=(item['path'], item_id)
+                        )
+                        thread.daemon = True
+                        thread.start()
+                    else:
+                        self.tree.insert("", "end",
+                                       values=(
+                                           item['name'],
+                                           self.format_size(item['size']),
+                                           item['type'],
+                                           datetime.fromtimestamp(item['modified']).strftime('%Y-%m-%d %H:%M')
+                                       ),
+                                       tags=('file',))
+                except Exception as e:
+                    print(f"Error displaying {item['name']}: {str(e)}")
                     continue
                     
         except PermissionError:
             messagebox.showerror("Error", "Permission denied")
-        
+        except Exception as e:
+            messagebox.showerror("Error", f"An error occurred: {str(e)}")
+            
         # Start updating sizes
         self.root.after(100, self.update_sizes)
 
@@ -232,16 +456,21 @@ class FileManager:
             return
             
         item = selection[0]
-        item_text = self.tree.item(item)["text"]
+        item_values = self.tree.item(item)["values"]
+        if not item_values:
+            return
+            
+        item_name = item_values[0]  # Name is now the first column
         
         # Handle drive selection from My Computer view
         if self.current_path is None:  # We're in My Computer view
-            drive = item_text.split()[0]  # Get drive letter (e.g., "C:\")
+            # Extract drive letter from the text (e.g., "Local Disk (C:)" -> "C:")
+            drive = item_name.split("(")[1].split(")")[0] + "\\"
             self.update_path(drive)
             return
             
         # Normal folder navigation
-        new_path = os.path.join(self.current_path, item_text)
+        new_path = os.path.join(self.current_path, item_name)
         if os.path.isdir(new_path):
             self.update_path(new_path)
 
@@ -264,14 +493,20 @@ class FileManager:
                 drive_path = f"{letter}:\\"
                 try:
                     drive_type = windll.kernel32.GetDriveTypeW(drive_path)
-                    # 3 is DRIVE_FIXED (hard drive)
-                    # 2 is DRIVE_REMOVABLE (USB, etc.)
-                    if drive_type in [2, 3]:
+                    # Include all drive types except DRIVE_NO_ROOT_DIR (1)
+                    if drive_type > 1:
                         drives.append(drive_path)
                 except:
                     pass
             bitmask >>= 1
         return drives
+
+    def get_drive_space(self, drive):
+        try:
+            usage = shutil.disk_usage(drive)
+            return usage.total, usage.used, usage.free
+        except:
+            return 0, 0, 0
 
     def show_my_computer(self):
         # Clear existing items
@@ -282,27 +517,74 @@ class FileManager:
         self.path_var.set("My Computer")
         self.current_path = None
         
-        # Get and display available drives
-        drives = self.get_available_drives()
-        for drive in drives:
-            try:
-                total, used, free = self.get_drive_space(drive)
-                drive_text = f"{drive} (Free: {self.format_size(free)} / Total: {self.format_size(total)})"
-                self.tree.insert("", "end", text=drive_text,
-                               values=("Drive",),
-                               tags=('folder',))
-            except:
-                self.tree.insert("", "end", text=drive,
-                               values=("Drive",),
-                               tags=('folder',))
-
-    def get_drive_space(self, drive):
-        total, used, free = (0, 0, 0)
         try:
-            total, used, free, = shutil.disk_usage(drive)
-        except:
-            pass
-        return total, used, free
+            # Get and display available drives
+            drives = self.get_available_drives()
+            for drive in sorted(drives):
+                try:
+                    # Get drive type
+                    drive_type = windll.kernel32.GetDriveTypeW(drive)
+                    
+                    # Get volume name
+                    volume_name_buffer = ctypes.create_unicode_buffer(1024)
+                    file_system_name_buffer = ctypes.create_unicode_buffer(1024)
+                    windll.kernel32.GetVolumeInformationW(
+                        drive,
+                        volume_name_buffer,
+                        ctypes.sizeof(volume_name_buffer),
+                        None, None, None,
+                        file_system_name_buffer,
+                        ctypes.sizeof(file_system_name_buffer)
+                    )
+                    volume_name = volume_name_buffer.value
+                    
+                    # Set drive label based on type
+                    if drive_type == 2:  # DRIVE_REMOVABLE
+                        drive_label = "Removable Drive"
+                    elif drive_type == 3:  # DRIVE_FIXED
+                        drive_label = "Local Disk"
+                    elif drive_type == 4:  # DRIVE_REMOTE
+                        drive_label = "Network Drive"
+                    elif drive_type == 5:  # DRIVE_CDROM
+                        drive_label = "CD/DVD Drive"
+                    else:
+                        drive_label = "Drive"
+                    
+                    # Get drive space
+                    total, used, free = self.get_drive_space(drive)
+                    
+                    # Format drive text
+                    drive_letter = drive[0]
+                    if volume_name:
+                        drive_name = f"{volume_name} ({drive_letter}:)"
+                    else:
+                        drive_name = f"{drive_label} ({drive_letter}:)"
+                    
+                    # Add size information
+                    size_info = f"Free: {self.format_size(free)} / Total: {self.format_size(total)}" if total > 0 else "Unknown"
+                    
+                    self.tree.insert("", "end",
+                                   values=(
+                                       drive_name,
+                                       size_info,
+                                       drive_label,
+                                       datetime.fromtimestamp(os.path.getctime(drive)).strftime('%Y-%m-%d %H:%M')
+                                   ),
+                                   tags=('folder',))
+                except Exception as e:
+                    print(f"Error displaying drive {drive}: {str(e)}")
+                    # Fallback for any errors
+                    drive_letter = drive[0]
+                    self.tree.insert("", "end",
+                                   values=(
+                                       f"Local Disk ({drive_letter}:)",
+                                       "Unknown",
+                                       "Drive",
+                                       ""
+                                   ),
+                                   tags=('folder',))
+        except Exception as e:
+            messagebox.showerror("Error", f"An error occurred: {str(e)}")
 
 if __name__ == "__main__":
     root = tk.Tk()
