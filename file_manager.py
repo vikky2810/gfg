@@ -36,14 +36,24 @@ class FileManager:
         self.size_max = float('inf')
         self.date_min = None
         self.date_max = None
-        self.date_range = None  # Initialize date_range
+        self.date_range = None
+        
+        # Path tracking
+        self.current_path = None
+        self.path_var = tk.StringVar(value="My Computer")
+        
+        # Selected items tracking
+        self.selected_items = []
+        self.selected_size = 0
+        
+        # Create tooltip
+        self.tooltip = self.create_tooltip()
         
         # Custom title bar
         self.create_title_bar()
         
-        # Path display
-        self.path_var = tk.StringVar()
-        self.create_path_display()
+        # Create breadcrumb navigation
+        self.create_breadcrumb()
         
         # Create main content frame
         self.content_frame = tk.Frame(self.root, bg="#2b2b2b")
@@ -61,6 +71,12 @@ class FileManager:
         
         # Create Treeview
         self.create_treeview()
+        
+        # Create status bar
+        self.create_status_bar()
+        
+        # Bind keyboard shortcuts
+        self.bind_shortcuts()
         
         # Initialize with My Computer view
         self.show_my_computer()
@@ -95,14 +111,25 @@ class FileManager:
         nav_frame.pack(fill="x", padx=10, pady=5)
         
         # My Computer button
-        my_computer_button = tk.Button(nav_frame, text="My Computer", command=self.show_my_computer,
+        my_computer_button = tk.Button(nav_frame, text="My Computer",
+                                     command=self.show_my_computer,
                                      bg="#3c3f41", fg="white", bd=0)
         my_computer_button.pack(side="left", padx=(0, 5))
+        self.show_tooltip(my_computer_button, "Go to My Computer (Ctrl+M)")
         
         # Up button
-        up_button = tk.Button(nav_frame, text="↑ Up", command=self.go_up,
+        up_button = tk.Button(nav_frame, text="↑ Up",
+                            command=self.go_up,
                             bg="#3c3f41", fg="white", bd=0)
         up_button.pack(side="left")
+        self.show_tooltip(up_button, "Go Up (Alt+Up)")
+        
+        # Refresh button
+        refresh_button = tk.Button(nav_frame, text="⟳",
+                                command=self.refresh,
+                                bg="#3c3f41", fg="white", bd=0)
+        refresh_button.pack(side="left", padx=5)
+        self.show_tooltip(refresh_button, "Refresh (F5)")
 
     def create_filter_panel(self):
         filter_frame = tk.Frame(self.content_frame, bg="#1f1f1f", width=200)
@@ -240,16 +267,16 @@ class FileManager:
             return True  # Show item by default if there's an error
 
     def create_treeview(self):
-        # Create Treeview with custom style
+    # Create Treeview with custom style
         style = ttk.Style()
         style.theme_use('default')
         style.configure("Treeview",
-                       background="#2b2b2b",
-                       foreground="white",
-                       fieldbackground="#2b2b2b")
+                    background="#2b2b2b",
+                    foreground="white",
+                    fieldbackground="#2b2b2b")
         style.configure("Treeview.Heading",
-                       background="#1f1f1f",
-                       foreground="white")
+                    background="#1f1f1f",
+                    foreground="white")
         
         # Create scrollbar
         scrollbar = ttk.Scrollbar(self.file_view_frame)
@@ -284,6 +311,7 @@ class FileManager:
         
         # Bind events
         self.tree.bind("<Double-1>", self.on_item_double_click)
+        self.tree.bind("<<TreeviewSelect>>", self.update_status_bar)
 
     def sort_items(self, column):
         if self.current_path is None:
@@ -402,6 +430,8 @@ class FileManager:
                                                      datetime.fromtimestamp(item['modified']).strftime('%Y-%m-%d %H:%M')
                                                  ),
                                                  tags=('folder',))
+                        # Add tooltip for the folder
+                        self.show_tooltip(self.tree, f"Double-click to open\nPath: {item['path']}")
                         # Start size calculation in background
                         thread = threading.Thread(
                             target=self.calculate_folder_size_async,
@@ -410,14 +440,19 @@ class FileManager:
                         thread.daemon = True
                         thread.start()
                     else:
-                        self.tree.insert("", "end",
-                                       values=(
-                                           item['name'],
-                                           self.format_size(item['size']),
-                                           item['type'],
-                                           datetime.fromtimestamp(item['modified']).strftime('%Y-%m-%d %H:%M')
-                                       ),
-                                       tags=('file',))
+                        item_id = self.tree.insert("", "end",
+                                                 values=(
+                                                     item['name'],
+                                                     self.format_size(item['size']),
+                                                     item['type'],
+                                                     datetime.fromtimestamp(item['modified']).strftime('%Y-%m-%d %H:%M')
+                                                 ),
+                                                 tags=('file',))
+                        # Add tooltip for the file
+                        self.show_tooltip(self.tree,
+                                       f"Type: {item['type']}\nSize: {self.format_size(item['size'])}\n"
+                                       f"Modified: {datetime.fromtimestamp(item['modified']).strftime('%Y-%m-%d %H:%M')}\n"
+                                       f"Path: {item['path']}")
                 except Exception as e:
                     print(f"Error displaying {item['name']}: {str(e)}")
                     continue
@@ -427,12 +462,14 @@ class FileManager:
         except Exception as e:
             messagebox.showerror("Error", f"An error occurred: {str(e)}")
             
-        # Start updating sizes
+        # Start updating sizes and update status bar
         self.root.after(100, self.update_sizes)
+        self.update_status_bar()
 
     def update_path(self, path):
         self.current_path = path
         self.path_var.set(path)
+        self.update_breadcrumb()
         self.display_files(path)
 
     def go_up(self):
@@ -585,6 +622,218 @@ class FileManager:
                                    tags=('folder',))
         except Exception as e:
             messagebox.showerror("Error", f"An error occurred: {str(e)}")
+
+    def create_tooltip(self):
+        """Create tooltip window"""
+        tooltip = tk.Toplevel(self.root)
+        tooltip.withdraw()
+        tooltip.overrideredirect(True)
+        
+        # Create label inside tooltip window
+        label = tk.Label(tooltip,
+                        bg="#2b2b2b",
+                        fg="white",
+                        bd=1,
+                        relief="solid",
+                        padx=5,
+                        pady=3)
+        label.pack()
+        
+        # Store the label reference
+        tooltip.label = label
+        
+        return tooltip
+
+    def show_tooltip(self, widget, text):
+        """Show tooltip near widget"""
+        def show(event):
+            # Get item under cursor
+            item = self.tree.identify_row(event.y)
+            if item:
+                # Get actual item text from the Treeview
+                item_text = self.tree.item(item, "values")[0]
+                full_text = f"{text}\nItem: {item_text}"
+                self.tooltip.label.configure(text=full_text)
+                self.tooltip.deiconify()
+                x = event.x_root + 15
+                y = event.y_root + 10
+                self.tooltip.geometry(f"+{x}+{y}")
+            else:
+                self.tooltip.withdraw()
+
+        def hide(event):
+            self.tooltip.withdraw()
+
+        # Bind to Treeview motion events
+        widget.bind("<Motion>", show)
+        widget.bind("<Leave>", hide)
+        widget.bind("<Button-1>", hide)
+
+    def create_breadcrumb(self):
+        """Create breadcrumb navigation"""
+        self.breadcrumb_frame = tk.Frame(self.root, bg="#2b2b2b")
+        self.breadcrumb_frame.pack(fill="x", padx=10, pady=5)
+        self.update_breadcrumb()
+
+    def update_breadcrumb(self):
+        """Update breadcrumb navigation"""
+        # Clear existing breadcrumbs
+        for widget in self.breadcrumb_frame.winfo_children():
+            widget.destroy()
+
+        if self.current_path is None:
+            label = tk.Label(self.breadcrumb_frame, text="My Computer",
+                           bg="#2b2b2b", fg="white")
+            label.pack(side="left")
+            return
+
+        parts = []
+        path = self.current_path
+        while path:
+            parts.append(path)
+            parent = os.path.dirname(path.rstrip('\\'))
+            if parent == path:
+                break
+            path = parent
+
+        parts.reverse()
+        
+        # Add "My Computer" at start
+        btn = tk.Button(self.breadcrumb_frame,
+                       text="My Computer",
+                       command=self.show_my_computer,
+                       bg="#3c3f41", fg="white", bd=0)
+        btn.pack(side="left", padx=2)
+        self.show_tooltip(btn, "Go to My Computer")
+
+        # Add separator
+        tk.Label(self.breadcrumb_frame, text=">",
+                bg="#2b2b2b", fg="white").pack(side="left", padx=2)
+
+        # Add path parts
+        for i, part in enumerate(parts):
+            text = os.path.basename(part.rstrip('\\')) or part
+            btn = tk.Button(self.breadcrumb_frame,
+                          text=text,
+                          command=lambda p=part: self.update_path(p),
+                          bg="#3c3f41", fg="white", bd=0)
+            btn.pack(side="left", padx=2)
+            self.show_tooltip(btn, f"Go to {part}")
+
+            if i < len(parts) - 1:
+                tk.Label(self.breadcrumb_frame, text=">",
+                        bg="#2b2b2b", fg="white").pack(side="left", padx=2)
+
+    def create_status_bar(self):
+        """Create status bar"""
+        self.status_frame = tk.Frame(self.root, bg="#1f1f1f")
+        self.status_frame.pack(side="bottom", fill="x")
+        
+        # Left side - selected items info
+        self.status_left = tk.Label(self.status_frame,
+                                  text="",
+                                  bg="#1f1f1f",
+                                  fg="white",
+                                  anchor="w")
+        self.status_left.pack(side="left", padx=5, pady=2)
+        
+        # Right side - total items and size
+        self.status_right = tk.Label(self.status_frame,
+                                   text="",
+                                   bg="#1f1f1f",
+                                   fg="white",
+                                   anchor="e")
+        self.status_right.pack(side="right", padx=5, pady=2)
+
+    def update_status_bar(self, event=None):
+        """Update status bar information"""
+        # Update selected items info
+        selection = self.tree.selection()
+        if selection:
+            selected_count = len(selection)
+            selected_size = 0
+            for item in selection:
+                size_str = self.tree.item(item)["values"][1]
+                if size_str != "Calculating...":
+                    try:
+                        # Extract numeric value and unit
+                        value = float(size_str.split()[0])
+                        unit = size_str.split()[1]
+                        # Convert to bytes
+                        multiplier = {
+                            'B': 1,
+                            'KB': 1024,
+                            'MB': 1024**2,
+                            'GB': 1024**3,
+                            'TB': 1024**4
+                        }
+                        selected_size += value * multiplier[unit]
+                    except:
+                        pass
+            
+            self.status_left.config(
+                text=f"Selected: {selected_count} item{'s' if selected_count > 1 else ''}, "
+                     f"Total size: {self.format_size(selected_size)}")
+        else:
+            self.status_left.config(text="")
+
+        # Update total items info
+        total_items = len(self.tree.get_children())
+        total_size = 0
+        for item in self.tree.get_children():
+            size_str = self.tree.item(item)["values"][1]
+            if size_str != "Calculating..." and "Free:" not in size_str:
+                try:
+                    value = float(size_str.split()[0])
+                    unit = size_str.split()[1]
+                    multiplier = {
+                        'B': 1,
+                        'KB': 1024,
+                        'MB': 1024**2,
+                        'GB': 1024**3,
+                        'TB': 1024**4
+                    }
+                    total_size += value * multiplier[unit]
+                except:
+                    pass
+        
+        self.status_right.config(
+            text=f"Total: {total_items} item{'s' if total_items > 1 else ''}, "
+                 f"Size: {self.format_size(total_size)}")
+
+    def bind_shortcuts(self):
+        """Bind keyboard shortcuts"""
+        # Navigation shortcuts
+        self.root.bind("<Alt-Up>", lambda e: self.go_up())
+        self.root.bind("<Alt-Left>", lambda e: self.go_back())
+        self.root.bind("<Alt-Right>", lambda e: self.go_forward())
+        self.root.bind("<F5>", lambda e: self.refresh())
+        
+        # Selection shortcuts
+        self.root.bind("<Control-a>", self.select_all)
+        
+        # View shortcuts
+        self.root.bind("<Control-m>", lambda e: self.show_my_computer())
+        
+        # Add tooltips to navigation buttons
+        for widget in self.root.winfo_children():
+            if isinstance(widget, tk.Button):
+                if widget.cget('text') == "↑ Up":
+                    self.show_tooltip(widget, "Go Up (Alt+Up)")
+                elif widget.cget('text') == "My Computer":
+                    self.show_tooltip(widget, "My Computer (Ctrl+M)")
+
+    def select_all(self, event=None):
+        """Select all items in the current view"""
+        for item in self.tree.get_children():
+            self.tree.selection_add(item)
+
+    def refresh(self, event=None):
+        """Refresh the current view"""
+        if self.current_path is None:
+            self.show_my_computer()
+        else:
+            self.display_files(self.current_path)
 
 if __name__ == "__main__":
     root = tk.Tk()
