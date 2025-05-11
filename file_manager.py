@@ -5,6 +5,9 @@ import math
 import threading
 from queue import Queue
 import time
+import string
+from ctypes import windll
+import shutil
 
 class FileManager:
     def __init__(self, root):
@@ -32,9 +35,8 @@ class FileManager:
         # Create Treeview
         self.create_treeview()
         
-        # Initialize with current directory
-        self.current_path = os.getcwd()
-        self.update_path(self.current_path)
+        # Initialize with My Computer view
+        self.show_my_computer()
 
     def create_title_bar(self):
         title_bar = tk.Frame(self.root, bg="#1f1f1f", relief="raised", bd=0)
@@ -65,6 +67,12 @@ class FileManager:
         nav_frame = tk.Frame(self.root, bg="#2b2b2b")
         nav_frame.pack(fill="x", padx=10, pady=5)
         
+        # My Computer button
+        my_computer_button = tk.Button(nav_frame, text="My Computer", command=self.show_my_computer,
+                                     bg="#3c3f41", fg="white", bd=0)
+        my_computer_button.pack(side="left", padx=(0, 5))
+        
+        # Up button
         up_button = tk.Button(nav_frame, text="↑ Up", command=self.go_up,
                             bg="#3c3f41", fg="white", bd=0)
         up_button.pack(side="left")
@@ -204,13 +212,17 @@ class FileManager:
         self.display_files(path)
 
     def go_up(self):
-        parent = os.path.dirname(self.current_path)
-        
-        # Handle Windows root directory case (e.g., "C:\")
-        if os.name == 'nt' and len(self.current_path) <= 3:
+        # If we're already at My Computer view, do nothing
+        if self.current_path is None:
             return
             
-        # Only update if we actually have a parent directory
+        # If we're at a root directory, go to My Computer view
+        if os.name == 'nt' and len(self.current_path) <= 3:
+            self.show_my_computer()
+            return
+            
+        # Normal directory up navigation
+        parent = os.path.dirname(self.current_path)
         if parent and parent != self.current_path:
             self.update_path(parent)
 
@@ -221,8 +233,15 @@ class FileManager:
             
         item = selection[0]
         item_text = self.tree.item(item)["text"]
-        new_path = os.path.join(self.current_path, item_text)
         
+        # Handle drive selection from My Computer view
+        if self.current_path is None:  # We're in My Computer view
+            drive = item_text.split()[0]  # Get drive letter (e.g., "C:\")
+            self.update_path(drive)
+            return
+            
+        # Normal folder navigation
+        new_path = os.path.join(self.current_path, item_text)
         if os.path.isdir(new_path):
             self.update_path(new_path)
 
@@ -236,6 +255,54 @@ class FileManager:
         x = self.root.winfo_x() + deltax
         y = self.root.winfo_y() + deltay
         self.root.geometry(f"+{x}+{y}")
+
+    def get_available_drives(self):
+        drives = []
+        bitmask = windll.kernel32.GetLogicalDrives()
+        for letter in string.ascii_uppercase:
+            if bitmask & 1:
+                drive_path = f"{letter}:\\"
+                try:
+                    drive_type = windll.kernel32.GetDriveTypeW(drive_path)
+                    # 3 is DRIVE_FIXED (hard drive)
+                    # 2 is DRIVE_REMOVABLE (USB, etc.)
+                    if drive_type in [2, 3]:
+                        drives.append(drive_path)
+                except:
+                    pass
+            bitmask >>= 1
+        return drives
+
+    def show_my_computer(self):
+        # Clear existing items
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        
+        # Set path to "My Computer"
+        self.path_var.set("My Computer")
+        self.current_path = None
+        
+        # Get and display available drives
+        drives = self.get_available_drives()
+        for drive in drives:
+            try:
+                total, used, free = self.get_drive_space(drive)
+                drive_text = f"{drive} (Free: {self.format_size(free)} / Total: {self.format_size(total)})"
+                self.tree.insert("", "end", text=drive_text,
+                               values=("Drive",),
+                               tags=('folder',))
+            except:
+                self.tree.insert("", "end", text=drive,
+                               values=("Drive",),
+                               tags=('folder',))
+
+    def get_drive_space(self, drive):
+        total, used, free = (0, 0, 0)
+        try:
+            total, used, free, = shutil.disk_usage(drive)
+        except:
+            pass
+        return total, used, free
 
 if __name__ == "__main__":
     root = tk.Tk()
